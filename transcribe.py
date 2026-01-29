@@ -161,20 +161,49 @@ def apply_speaker_names(segments: list[dict], name_map: dict[str, str]) -> None:
             seg["speaker"] = name_map[speaker]
 
 
-def format_output(segments: list[dict], with_speakers: bool) -> str:
+def auto_name_speakers(segments: list[dict]) -> dict[str, str]:
+    """Automatically assign Speaker-1, Speaker-2, etc. based on order of appearance."""
+    seen_speakers = []
+    for seg in segments:
+        speaker = seg.get("speaker", "Unknown")
+        if speaker not in seen_speakers and speaker != "Unknown":
+            seen_speakers.append(speaker)
+    return {speaker: f"Speaker-{i+1}" for i, speaker in enumerate(seen_speakers)}
+
+
+def format_timestamp(seconds: float) -> str:
+    """Convert seconds to MM:SS or HH:MM:SS format."""
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+    if hours > 0:
+        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
+    return f"{minutes:02d}:{secs:02d}"
+
+
+def format_output(segments: list[dict], with_speakers: bool, with_timestamps: bool = True) -> str:
     lines = []
     current_speaker = None
     for seg in segments:
+        header_parts = []
+
+        if with_timestamps:
+            start_ts = format_timestamp(seg["start"])
+            end_ts = format_timestamp(seg["end"])
+            header_parts.append(f"[{start_ts} - {end_ts}]")
+
         if with_speakers:
             speaker = seg.get("speaker", "Unknown")
             if speaker != current_speaker:
                 current_speaker = speaker
-                lines.append(f"\n[{speaker}]")
-            lines.append(seg["text"].strip())
-        else:
-            lines.append(seg["text"])
+                header_parts.append(f"[{speaker}]")
 
-    if with_speakers:
+        if header_parts:
+            lines.append("\n" + " ".join(header_parts))
+
+        lines.append(seg["text"].strip())
+
+    if with_speakers or with_timestamps:
         return "\n".join(lines).strip()
     return "".join(lines)
 
@@ -188,6 +217,9 @@ def main():
     parser.add_argument("--hf-token", default=os.environ.get("HF_TOKEN"),
                         help="HuggingFace token for speaker diarization (or set HF_TOKEN env var)")
     parser.add_argument("--no-diarize", action="store_true", help="Skip speaker diarization")
+    parser.add_argument("--no-timestamps", action="store_true", help="Omit timestamps from output")
+    parser.add_argument("--interactive", action="store_true",
+                        help="Interactively prompt for speaker names (default: auto-name as Speaker-1, Speaker-2, ...)")
     args = parser.parse_args()
 
     input_path = Path(args.input)
@@ -225,12 +257,19 @@ def main():
             assign_speakers(result["segments"], speaker_turns)
 
     if do_diarize:
-        name_map = prompt_speaker_names(result["segments"])
-        if name_map:
-            apply_speaker_names(result["segments"], name_map)
-            save_speaker_map(name_map)
+        if args.interactive:
+            name_map = prompt_speaker_names(result["segments"])
+            if name_map:
+                apply_speaker_names(result["segments"], name_map)
+                save_speaker_map(name_map)
+        else:
+            # Auto-name speakers as Speaker-1, Speaker-2, etc.
+            name_map = auto_name_speakers(result["segments"])
+            if name_map:
+                apply_speaker_names(result["segments"], name_map)
+                print(f"  Auto-named {len(name_map)} speakers: {', '.join(name_map.values())}")
 
-    text = format_output(result["segments"], with_speakers=do_diarize)
+    text = format_output(result["segments"], with_speakers=do_diarize, with_timestamps=not args.no_timestamps)
     output_path.write_text(text, encoding="utf-8")
     print(f"Transcript saved to {output_path}")
 

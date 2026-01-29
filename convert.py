@@ -101,14 +101,14 @@ def compress_video(
     return True
 
 
-def transcribe_video(video_path: Path, output_dir: Path, hf_token: str = None) -> bool:
+def transcribe_video(video_path: Path, output_dir: Path, hf_token: str = None, interactive: bool = False) -> bool:
     """Run transcription with speaker diarization on video."""
     # Import from transcribe module
     sys.path.insert(0, str(SCRIPT_DIR))
     from transcribe import (
         extract_audio, transcribe, diarize, assign_speakers,
         prompt_speaker_names, apply_speaker_names, format_output,
-        load_speaker_map
+        auto_name_speakers
     )
 
     transcript_path = output_dir / "transcript.txt"
@@ -130,8 +130,15 @@ def transcribe_video(video_path: Path, output_dir: Path, hf_token: str = None) -
             speaker_turns = diarize(tmp_audio, hf_token)
             assign_speakers(result["segments"], speaker_turns)
 
-            # Interactive speaker naming
-            name_map = prompt_speaker_names(result["segments"])
+            if interactive:
+                # Interactive speaker naming
+                name_map = prompt_speaker_names(result["segments"])
+            else:
+                # Auto-name speakers as Speaker-1, Speaker-2, etc.
+                name_map = auto_name_speakers(result["segments"])
+                if name_map:
+                    print(f"  Auto-benannt: {', '.join(name_map.values())}")
+
             if name_map:
                 apply_speaker_names(result["segments"], name_map)
                 # Save speaker mapping to this recording's directory
@@ -141,8 +148,8 @@ def transcribe_video(video_path: Path, output_dir: Path, hf_token: str = None) -
         else:
             print("  Kein HF_TOKEN - Sprecher-Erkennung übersprungen")
 
-        # Save transcript
-        text = format_output(result["segments"], with_speakers=bool(hf_token))
+        # Save transcript with timestamps
+        text = format_output(result["segments"], with_speakers=bool(hf_token), with_timestamps=True)
         transcript_path.write_text(text, encoding="utf-8")
         print(f"  Transkript gespeichert: {transcript_path}")
 
@@ -153,6 +160,57 @@ def transcribe_video(video_path: Path, output_dir: Path, hf_token: str = None) -
         return False
     finally:
         tmp_audio.unlink(missing_ok=True)
+
+
+def summarize_transcript(transcript_path: Path, output_dir: Path, api_key: str = None) -> bool:
+    """Generate summary from transcript using Claude API."""
+    if not api_key:
+        # Still ohne Meldung - Benutzer kann manuell mit Claude Code zusammenfassen
+        return False
+
+    try:
+        import anthropic
+    except ImportError:
+        # anthropic nicht installiert - still überspringen
+        return False
+
+    # Import from summarize module
+    sys.path.insert(0, str(SCRIPT_DIR))
+    from summarize import (
+        load_transcript, extract_timestamps_and_text,
+        generate_summary, generate_insights_with_timestamps
+    )
+
+    print("  Zusammenfassung generieren...")
+
+    try:
+        transcript = load_transcript(transcript_path)
+        segments = extract_timestamps_and_text(transcript)
+        client = anthropic.Anthropic(api_key=api_key)
+
+        output_parts = []
+
+        # Generate summary
+        summary = generate_summary(transcript, client, language="de")
+        output_parts.append("# Meeting-Zusammenfassung\n")
+        output_parts.append(summary)
+        output_parts.append("\n")
+
+        # Generate insights with timestamps
+        insights = generate_insights_with_timestamps(transcript, segments, client, language="de")
+        output_parts.append("\n# Wichtige Punkte mit Zeitstempeln\n")
+        output_parts.append(insights)
+
+        # Write output
+        summary_path = output_dir / "summary.txt"
+        summary_path.write_text("\n".join(output_parts), encoding="utf-8")
+        print(f"  Zusammenfassung gespeichert: {summary_path}")
+
+        return True
+
+    except Exception as e:
+        print(f"  FEHLER bei Zusammenfassung: {e}")
+        return False
 
 
 def find_videos(input_dir: Path) -> list:
@@ -178,10 +236,12 @@ def process_video(
     input_path: Path,
     compress: bool = True,
     do_transcribe: bool = True,
+    do_summarize: bool = True,
     quality: int = 50,
     scale: str = None,
     max_compression: bool = False,
-    delete_original: bool = True
+    delete_original: bool = True,
+    interactive: bool = False
 ) -> bool:
     """Process a single video through the pipeline."""
     # If video is already in converted/ (transcribe-only mode), use its parent dir
@@ -208,10 +268,19 @@ def process_video(
     if do_transcribe:
         video_to_transcribe = output_video if compress else input_path
         hf_token = os.environ.get("HF_TOKEN")
-        if not transcribe_video(video_to_transcribe, output_dir, hf_token):
+        if not transcribe_video(video_to_transcribe, output_dir, hf_token, interactive):
             return False
 
-    # Step 3: Delete original
+    # Step 3: Summarize (optional - nur wenn ANTHROPIC_API_KEY gesetzt)
+    summary_generated = False
+    if do_summarize and do_transcribe:
+        transcript_path = output_dir / "transcript.txt"
+        if transcript_path.exists():
+            anthropic_key = os.environ.get("ANTHROPIC_API_KEY")
+            if anthropic_key:
+                summary_generated = summarize_transcript(transcript_path, output_dir, anthropic_key)
+
+    # Step 4: Delete original
     if delete_original and compress:
         print(f"  Original löschen: {input_path.name}")
         input_path.unlink()
@@ -223,7 +292,7 @@ def process_video(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Video-Verarbeitungs-Pipeline: Komprimierung, Transkription, Sprecher-Erkennung"
+        description="Video-Verarbeitungs-Pipeline: Komprimierung, Transkription, Sprecher-Erkennung, Zusammenfassung"
     )
     parser.add_argument("input", nargs="?", help="Spezifische Video-Datei")
     parser.add_argument("--compress-only", action="store_true",
@@ -240,6 +309,10 @@ def main():
                         help="Originale behalten (Standard: löschen)")
     parser.add_argument("--skip-processed", action="store_true",
                         help="Bereits verarbeitete Videos überspringen")
+    parser.add_argument("--no-summary", action="store_true",
+                        help="Zusammenfassung überspringen")
+    parser.add_argument("--interactive", action="store_true",
+                        help="Interaktiv Sprecher-Namen eingeben (Standard: automatisch)")
     args = parser.parse_args()
 
     # Determine what to process
@@ -274,6 +347,7 @@ def main():
 
     compress = not args.transcribe_only
     do_transcribe = not args.compress_only
+    do_summarize = not args.no_summary
     delete_original = not args.keep_originals
 
     success = 0
@@ -284,18 +358,25 @@ def main():
             video,
             compress=compress,
             do_transcribe=do_transcribe,
+            do_summarize=do_summarize,
             quality=args.quality,
             scale=args.scale,
             max_compression=args.max_compression,
-            delete_original=delete_original
+            delete_original=delete_original,
+            interactive=args.interactive
         ):
             success += 1
         else:
             failed += 1
 
     print(f"\n{'='*60}")
-    print(f"Zusammenfassung: {success} erfolgreich, {failed} fehlgeschlagen")
+    print(f"Ergebnis: {success} erfolgreich, {failed} fehlgeschlagen")
     print(f"{'='*60}")
+
+    # Hinweis für manuelle Zusammenfassung
+    if do_transcribe and not os.environ.get("ANTHROPIC_API_KEY"):
+        print("\nTipp: Fuer Zusammenfassung mit Claude Code:")
+        print('  "Fasse das Transkript in converted/<name>/transcript.txt zusammen"')
 
 
 if __name__ == "__main__":
