@@ -36,6 +36,7 @@ def get_audio_duration(audio_path: Path) -> float:
 
 def diarize(audio_path: Path, hf_token: str) -> list[tuple[float, float, str]]:
     print("Running speaker diarization...")
+    print("  ⏳ Lade pyannote Modell...")
     # pyannote checkpoints require weights_only=False with PyTorch 2.6+
     _orig_load = torch.load
     torch.load = lambda *a, **kw: _orig_load(*a, **{**kw, "weights_only": False})
@@ -45,6 +46,7 @@ def diarize(audio_path: Path, hf_token: str) -> list[tuple[float, float, str]]:
     )
     torch.load = _orig_load
     device = "mps" if torch.backends.mps.is_available() else "cpu"
+    print(f"  ⏳ Diarisierung auf {device.upper()}...")
     pipeline.to(torch.device(device))
 
     result = pipeline(str(audio_path))
@@ -53,7 +55,8 @@ def diarize(audio_path: Path, hf_token: str) -> list[tuple[float, float, str]]:
     annotation = result.speaker_diarization if hasattr(result, 'speaker_diarization') else result
     for turn, _, speaker in annotation.itertracks(yield_label=True):
         turns.append((turn.start, turn.end, speaker))
-    print(f"  Found {len(set(t[2] for t in turns))} speakers")
+    num_speakers = len(set(t[2] for t in turns))
+    print(f"  Found {num_speakers} speakers")
     return turns
 
 
@@ -73,7 +76,9 @@ def transcribe(audio_path: Path, model_name: str, language: str) -> dict:
     device = "mps" if torch.backends.mps.is_available() else "cpu"
     print(f"Using device: {device}")
 
+    print(f"  ⏳ Lade Whisper Modell '{model_name}'...")
     model = whisper.load_model(model_name, device=device)
+    print(f"  ✅ Modell geladen")
 
     duration = get_audio_duration(audio_path)
     print(f"Audio duration: {duration / 60:.1f} minutes")
