@@ -25,6 +25,8 @@ SCALE=""
 KEEP_ORIGINALS=""
 SKIP_PROCESSED=""
 NO_SUMMARY=""
+NO_DIARIZE=""
+DIARIZE_ONLY=""
 CONFIRM="yes"
 
 # Hilfe anzeigen
@@ -43,6 +45,8 @@ show_help() {
     echo "  --keep                Originale behalten (Standard: löschen)"
     echo "  --skip-processed      Bereits verarbeitete überspringen"
     echo "  --no-summary          Keine Zusammenfassung generieren"
+    echo "  --no-diarize          Sprecher-Erkennung überspringen (Offline-Modus)"
+    echo "  --diarize-only [DIR]  Sprecher-Erkennung nachträglich (ohne DIR: alle fehlenden)"
     echo "  --yes, -y             Ohne Bestätigung starten"
     echo "  --help, -h            Diese Hilfe anzeigen"
     echo ""
@@ -86,6 +90,19 @@ while [[ $# -gt 0 ]]; do
         --no-summary)
             NO_SUMMARY="--no-summary"
             shift
+            ;;
+        --no-diarize)
+            NO_DIARIZE="--no-diarize"
+            shift
+            ;;
+        --diarize-only)
+            if [[ -n "$2" && "$2" != --* ]]; then
+                DIARIZE_ONLY="$2"
+                shift 2
+            else
+                DIARIZE_ONLY="__batch__"
+                shift
+            fi
             ;;
         --yes|-y)
             CONFIRM="no"
@@ -144,6 +161,40 @@ fi
 
 echo ""
 
+# --diarize-only: Diarisierung nachträglich anwenden
+if [ "$DIARIZE_ONLY" = "__batch__" ]; then
+    echo "Modus: 🔊 Batch-Diarisierung (alle Ordner ohne speakers.json)"
+    echo ""
+    OUTPUT_DIR="$VIDEO_CONVERTER_DIR/converted"
+    found=0
+    failed=0
+    for dir in "$OUTPUT_DIR"/*/; do
+        if [ -f "$dir/transcript.txt" ] && [ ! -f "$dir/speakers.json" ]; then
+            ((found++))
+            echo "🔊 Diarisiere: $(basename "$dir")"
+            if "$PYTHON" "$VIDEO_CONVERTER_DIR/convert.py" --diarize-only "$dir"; then
+                echo "✅ $(basename "$dir")"
+            else
+                ((failed++))
+                echo "❌ Fehler bei: $(basename "$dir")"
+            fi
+            echo ""
+        fi
+    done
+    if [ $found -eq 0 ]; then
+        echo "✅ Alle Ordner haben bereits eine speakers.json"
+    else
+        echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+        echo "Diarisiert: $found Ordner, davon $failed fehlgeschlagen"
+    fi
+    exit 0
+elif [ -n "$DIARIZE_ONLY" ]; then
+    echo "Modus: 🔊 Nur Sprecher-Diarisierung"
+    echo ""
+    "$PYTHON" "$VIDEO_CONVERTER_DIR/convert.py" --diarize-only "$DIARIZE_ONLY"
+    exit $?
+fi
+
 # Videos finden
 shopt -s nullglob nocaseglob
 videos=("$INPUT_DIR"/*.{mov,mp4,mkv,avi,webm,m4v})
@@ -190,7 +241,7 @@ for video in "${videos[@]}"; do
     echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
     # shellcheck disable=SC2086
-    if "$PYTHON" "$VIDEO_CONVERTER_DIR/convert.py" "$video" $EXTRA_ARGS $KEEP_ORIGINALS $SKIP_PROCESSED $NO_SUMMARY; then
+    if "$PYTHON" "$VIDEO_CONVERTER_DIR/convert.py" "$video" $EXTRA_ARGS $KEEP_ORIGINALS $SKIP_PROCESSED $NO_SUMMARY $NO_DIARIZE; then
         ((success++))
     else
         ((failed++))
