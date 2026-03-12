@@ -9,6 +9,7 @@ Dies ist eine Video-Konvertierungs-Pipeline für Meeting-Aufnahmen. Die Pipeline
 ```
 video-converter/
 ├── convert.py          # Haupt-Pipeline (orchestriert alles)
+├── convert-all.sh      # Batch-Verarbeitung aller Videos (auch global via ~/bin/convert-all)
 ├── transcribe.py       # Whisper + pyannote Transkription
 ├── rename_speakers.py  # Sprecher umbenennen Tool
 ├── summarize.py        # Claude API Zusammenfassung
@@ -95,15 +96,54 @@ Die Keys sind die internen pyannote IDs, die Values sind die angezeigten Namen.
 # Pipeline starten
 ./run-pipeline.sh
 
+# Alle Videos auf einmal (global verfügbar via ~/bin/convert-all)
+convert-all --yes
+convert-all --max -y              # Maximale Kompression
+convert-all --no-diarize --yes    # Offline (ohne Sprecher-Erkennung)
+
 # Mit Optionen
 ./run-pipeline.sh --scale 1080p --keep-originals
+
+# Ohne Sprecher-Erkennung (Offline-Modus)
+./run-pipeline.sh --no-diarize "files/video.mov"
+
+# Sprecher-Erkennung nachträglich nachholen (einzeln)
+./run-pipeline.sh --diarize-only "converted/2026-02-20_Donnerstag_14-00_Meeting"
+
+# Sprecher-Erkennung für ALLE Ordner ohne speakers.json nachholen
+convert-all --diarize-only
 
 # Nur Transkription (ohne Komprimierung)
 ./run-pipeline.sh --transcribe-only "converted/video/video.mp4"
 
+# Unterbrochene Verarbeitung fortsetzen
+./run-pipeline.sh --resume "converted/Bildschirmaufnahme 2026-02-10 um 14.59.06"
+
 # Status prüfen
 ls -la converted/*/
 ```
+
+## Resume-Logik
+
+Die Pipeline kann an jeder Stelle unterbrochen und wieder aufgenommen werden. Jeder Schritt prüft vor Ausführung, ob sein Output bereits existiert und valide ist:
+
+- **Komprimierung**: `video.mp4` vorhanden + ffprobe-Dauer > 0 → Skip
+- **Transkription**: `transcript.txt` vorhanden + ≥100 Bytes → Skip
+- **Zusammenfassung**: `summary.txt`/`.md` vorhanden + nicht leer → Skip
+- **Umbenennung**: Idempotent (vergleicht aktuellen mit Ziel-Namen)
+- **Cleanup**: Skip wenn Original bereits gelöscht
+
+Zwei Wege zur Wiederaufnahme:
+1. Originaldatei erneut angeben: `./run-pipeline.sh "files/video.mov"` — findet existierenden Output automatisch
+2. `--resume` auf Output-Ordner: `./run-pipeline.sh --resume "converted/..."` — setzt `compress=False`, `delete_original=False`
+
+## Offline-/Online-Hinweise
+
+- **ffmpeg + Whisper** laufen komplett offline
+- **pyannote.audio** (Sprecher-Diarisierung) braucht beim ersten Aufruf Internet (HuggingFace Model-Download), danach gecached
+- **Claude API** (Zusammenfassung + Titel) braucht Internet
+- **Offline-Modus**: `--no-diarize` überspringt die Sprecher-Erkennung → Pipeline läuft ohne Internet
+- **Nachholen**: Diarisierung kann später einzeln nachgeholt werden: `./run-pipeline.sh --diarize-only "converted/..."`
 
 ## Fehlerbehandlung
 
