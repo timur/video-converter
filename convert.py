@@ -14,7 +14,7 @@ from pathlib import Path
 # Configuration
 SCRIPT_DIR = Path(__file__).parent
 INPUT_DIR = SCRIPT_DIR / "files"
-OUTPUT_DIR = SCRIPT_DIR / "converted"
+OUTPUT_DIR = Path(os.environ.get("VIDEO_CONVERTER_OUTPUT_DIR", SCRIPT_DIR / "converted"))
 VIDEO_EXTENSIONS = {".mov", ".mp4", ".mkv", ".avi", ".webm", ".m4v"}
 
 
